@@ -1,10 +1,12 @@
 import Phaser from 'phaser'
 import type { GameSnapshot, InputAction, RenderState, TetrominoType } from '../tetrixLogic'
-import { TetrixEngine } from '../tetrixLogic'
+import { TetrixEngine, getMatrixForType } from '../tetrixLogic'
 
 type SceneCallbacks = {
   onStateUpdate?: (state: RenderState) => void
   onSceneReady?: () => void
+  onRequestSave?: () => void
+  onRequestRestart?: () => void
 }
 
 type ControlButtonSpec = {
@@ -19,6 +21,31 @@ type ControlButton = ControlButtonSpec & {
   container: Phaser.GameObjects.Container
   background: Phaser.GameObjects.Rectangle
   text: Phaser.GameObjects.Text
+}
+
+type HudButtonAction = 'save' | 'restart'
+
+type HudButton = {
+  action: HudButtonAction
+  container: Phaser.GameObjects.Container
+  background: Phaser.GameObjects.Rectangle
+  label: Phaser.GameObjects.Text
+  disabled: boolean
+}
+
+type HudElements = {
+  panelBg: Phaser.GameObjects.Rectangle
+  scoreLabel: Phaser.GameObjects.Text
+  scoreValue: Phaser.GameObjects.Text
+  linesLabel: Phaser.GameObjects.Text
+  linesValue: Phaser.GameObjects.Text
+  levelLabel: Phaser.GameObjects.Text
+  levelValue: Phaser.GameObjects.Text
+  nextLabel: Phaser.GameObjects.Text
+  nextCells: Phaser.GameObjects.Rectangle[]
+  saveButton: HudButton
+  restartButton: HudButton
+  statusText: Phaser.GameObjects.Text
 }
 
 const COLOR_MAP: Record<TetrominoType, number> = {
@@ -44,6 +71,15 @@ export class TetrixScene extends Phaser.Scene {
   private cellSize = 24
   private boardOriginX = 0
   private boardOriginY = 0
+  private boardPixelWidth = 0
+  private boardPixelHeight = 0
+  private panelWidth = 220
+  private controlTop = 0
+  private hudLayer?: Phaser.GameObjects.Container
+  private hudElements?: HudElements
+  private statusTimer?: Phaser.Time.TimerEvent
+  private lastState?: RenderState
+  private saveBusy = false
   private controlLayer?: Phaser.GameObjects.Container
   private controlButtons: ControlButton[] = []
   private holdTimers = new Map<number, Phaser.Time.TimerEvent>()
@@ -59,6 +95,9 @@ export class TetrixScene extends Phaser.Scene {
     this.scale.on('resize', this.handleResize, this)
     this.handleResize()
     this.registerKeyboard()
+    this.hudLayer = this.add.container(0, 0)
+    this.hudLayer.setDepth(6)
+    this.createHudPanel()
     this.controlLayer = this.add.container(0, 0)
     this.controlLayer.setDepth(10)
     this.createControlButtons()
@@ -88,9 +127,13 @@ export class TetrixScene extends Phaser.Scene {
 
   startNewGame(snapshot?: GameSnapshot) {
     this.engine.start(snapshot)
+    this.saveBusy = false
     this.resetDropTimer()
     this.needsDraw = true
-    this.callbacks.onStateUpdate?.(this.engine.getRenderState())
+    const state = this.engine.getRenderState()
+    this.lastState = state
+    this.updateHud(state)
+    this.callbacks.onStateUpdate?.(state)
   }
 
   pauseGame() {
@@ -113,6 +156,29 @@ export class TetrixScene extends Phaser.Scene {
     return this.engine.getSnapshot()
   }
 
+  showStatus(message: string, duration = 2000) {
+    if (!this.hudElements) return
+    this.hudElements.statusText.setText(message)
+    if (this.statusTimer) {
+      this.statusTimer.remove(false)
+      this.statusTimer = undefined
+    }
+    if (duration > 0) {
+      this.statusTimer = this.time.addEvent({
+        delay: duration,
+        callback: () => {
+          this.hudElements?.statusText.setText('')
+          this.statusTimer = undefined
+        }
+      })
+    }
+  }
+
+  setSaveBusy(busy: boolean) {
+    this.saveBusy = busy
+    this.applyHudButtonStates()
+  }
+
   private resetDropTimer() {
     this.dropInterval = this.engine.getDropInterval()
     this.dropTimer = 0
@@ -120,6 +186,8 @@ export class TetrixScene extends Phaser.Scene {
 
   private draw() {
     const state = this.engine.getRenderState()
+    this.lastState = state
+    this.updateHud(state)
     this.callbacks.onStateUpdate?.(state)
     const g = this.graphics
     if (!g) return
@@ -232,15 +300,39 @@ export class TetrixScene extends Phaser.Scene {
 
   private handleResize = () => {
     const { width, height } = this.scale.gameSize
-    const padding = 32
-    const cellW = Math.floor((width - padding) / this.engine.width)
-    const cellH = Math.floor((height - padding) / this.engine.height)
-    const nextCellSize = Math.max(16, Math.min(cellW, cellH))
+    const padding = 24
+    const minPanel = 150
+    const maxPanel = 260
+    const controlHeight = Math.min(200, Math.max(140, Math.floor(height * 0.24)))
+    const desiredPanel = Phaser.Math.Clamp(Math.floor(width * 0.28), minPanel, maxPanel)
+    const availableWidth = width - padding * 3 - desiredPanel
+    const availableHeight = height - controlHeight - padding * 3
+    const cellW = Math.floor(availableWidth / this.engine.width)
+    const cellH = Math.floor(availableHeight / this.engine.height)
+    const nextCellSize = Math.max(14, Math.min(cellW, cellH))
     this.cellSize = nextCellSize
-    this.boardOriginX = Math.floor((width - this.cellSize * this.engine.width) / 2)
-    this.boardOriginY = Math.floor((height - this.cellSize * this.engine.height) / 2)
+    this.boardPixelWidth = this.cellSize * this.engine.width
+    this.boardPixelHeight = this.cellSize * this.engine.height
+    this.boardOriginX = padding
+    let totalRequiredWidth = this.boardOriginX + this.boardPixelWidth + desiredPanel + padding * 2
+    if (totalRequiredWidth > width) {
+      const overflow = totalRequiredWidth - width
+      const shrink = Math.ceil(overflow / this.engine.width)
+      this.cellSize = Math.max(14, this.cellSize - shrink)
+      this.boardPixelWidth = this.cellSize * this.engine.width
+      this.boardPixelHeight = this.cellSize * this.engine.height
+      totalRequiredWidth = this.boardOriginX + this.boardPixelWidth + desiredPanel + padding * 2
+    }
+    this.panelWidth = Math.max(
+      minPanel,
+      Math.min(desiredPanel, width - this.boardOriginX - this.boardPixelWidth - padding * 2)
+    )
+    const verticalSpace = height - controlHeight - padding * 2 - this.boardPixelHeight
+    this.boardOriginY = padding + Math.max(0, Math.floor(verticalSpace / 2))
+    this.controlTop = this.boardOriginY + this.boardPixelHeight + padding
     this.needsDraw = true
     this.layoutControlButtons()
+    this.layoutHudPanel()
   }
 
   private registerKeyboard() {
@@ -265,6 +357,258 @@ export class TetrixScene extends Phaser.Scene {
     })
   }
 
+  private createHudPanel() {
+    const layer = this.hudLayer ?? this.add.container(0, 0)
+    const panelBg = this.add.rectangle(0, 0, 200, 300, 0x0b1221, 0.92).setOrigin(0, 0)
+    panelBg.setStrokeStyle(2, 0x1f2937, 0.9)
+    layer.add(panelBg)
+
+    const labelStyle: Phaser.Types.GameObjects.Text.TextStyle = {
+      color: '#a5b4fc',
+      fontSize: '13px',
+      fontFamily: 'Space Grotesk',
+      fontStyle: '600'
+    }
+    const valueStyle: Phaser.Types.GameObjects.Text.TextStyle = {
+      color: '#f8fafc',
+      fontSize: '28px',
+      fontFamily: 'Space Grotesk',
+      fontStyle: '600'
+    }
+
+    const scoreLabel = this.add.text(0, 0, 'Score', labelStyle).setOrigin(0)
+    const scoreValue = this.add.text(0, 0, '0', valueStyle).setOrigin(0)
+    const linesLabel = this.add.text(0, 0, 'Lines', labelStyle).setOrigin(0)
+    const linesValue = this.add.text(0, 0, '0', valueStyle).setOrigin(0)
+    const levelLabel = this.add.text(0, 0, 'Level', labelStyle).setOrigin(0)
+    const levelValue = this.add.text(0, 0, '1', valueStyle).setOrigin(0)
+    const nextLabel = this.add.text(0, 0, 'Next', labelStyle).setOrigin(0)
+
+    ;[
+      scoreLabel,
+      scoreValue,
+      linesLabel,
+      linesValue,
+      levelLabel,
+      levelValue,
+      nextLabel
+    ].forEach((text) => layer.add(text))
+
+    const nextCells: Phaser.GameObjects.Rectangle[] = []
+    for (let i = 0; i < 16; i += 1) {
+      const cell = this.add.rectangle(0, 0, 24, 24, 0x1f2937, 0.35).setOrigin(0, 0)
+      cell.setStrokeStyle(1, 0x334155, 0.7)
+      nextCells.push(cell)
+      layer.add(cell)
+    }
+
+    const saveButton = this.createHudButton('Save', 'save')
+    const restartButton = this.createHudButton('Restart', 'restart')
+
+    const statusText = this.add
+      .text(0, 0, '', {
+        color: '#cbd5f5',
+        fontSize: '14px',
+        fontFamily: 'Space Grotesk',
+        wordWrap: { width: 200 }
+      })
+      .setOrigin(0)
+    layer.add(statusText)
+
+    this.hudElements = {
+      panelBg,
+      scoreLabel,
+      scoreValue,
+      linesLabel,
+      linesValue,
+      levelLabel,
+      levelValue,
+      nextLabel,
+      nextCells,
+      saveButton,
+      restartButton,
+      statusText
+    }
+    this.layoutHudPanel()
+    this.applyHudButtonStates()
+  }
+
+  private layoutHudPanel() {
+    if (!this.hudElements) return
+    const { panelBg, scoreLabel, scoreValue, linesLabel, linesValue, levelLabel, levelValue, nextLabel, nextCells, saveButton, restartButton, statusText } =
+      this.hudElements
+    const panelLeft = this.boardOriginX + this.boardPixelWidth + 24
+    const panelTop = this.boardOriginY
+    const width = Math.max(this.panelWidth, 150)
+    const height = Math.max(this.boardPixelHeight, 280)
+    panelBg.setPosition(panelLeft, panelTop)
+    panelBg.setDisplaySize(width, height)
+
+    const textLeft = panelLeft + 16
+    let cursorY = panelTop + 20
+    this.positionMetric(scoreLabel, scoreValue, textLeft, cursorY)
+    cursorY += 70
+    this.positionMetric(linesLabel, linesValue, textLeft, cursorY)
+    cursorY += 70
+    this.positionMetric(levelLabel, levelValue, textLeft, cursorY)
+    cursorY += 70
+
+    nextLabel.setPosition(textLeft, cursorY)
+    cursorY += 28
+    const previewGap = 6
+    const previewCellSize = Math.min((width - 32 - previewGap * 3) / 4, 32)
+    const previewLeft = textLeft
+    const previewTop = cursorY
+
+    nextCells.forEach((cell, index) => {
+      const row = Math.floor(index / 4)
+      const col = index % 4
+      cell.setDisplaySize(previewCellSize, previewCellSize)
+      cell.setPosition(
+        previewLeft + col * (previewCellSize + previewGap),
+        previewTop + row * (previewCellSize + previewGap)
+      )
+    })
+
+    cursorY = previewTop + previewCellSize * 4 + previewGap * 3 + 24
+    const buttonWidth = Math.max(120, width - 32)
+    const buttonHeight = 52
+    this.positionHudButton(
+      saveButton,
+      panelLeft + width / 2,
+      cursorY + buttonHeight / 2,
+      buttonWidth,
+      buttonHeight
+    )
+    cursorY += buttonHeight + 12
+    this.positionHudButton(
+      restartButton,
+      panelLeft + width / 2,
+      cursorY + buttonHeight / 2,
+      buttonWidth,
+      buttonHeight
+    )
+    cursorY += buttonHeight + 16
+    statusText.setPosition(textLeft, cursorY)
+    statusText.setWordWrapWidth(buttonWidth)
+  }
+
+  private positionMetric(
+    label: Phaser.GameObjects.Text,
+    value: Phaser.GameObjects.Text,
+    x: number,
+    y: number
+  ) {
+    label.setPosition(x, y)
+    value.setPosition(x, y + 26)
+  }
+
+  private createHudButton(label: string, action: HudButtonAction): HudButton {
+    const container = this.add.container(0, 0)
+    container.setDepth(7)
+    const background = this.add.rectangle(0, 0, 160, 50, 0x1f2937, 0.95)
+    background.setStrokeStyle(2, 0x475569, 0.85)
+    const text = this.add
+      .text(0, 0, label, {
+        color: '#f8fafc',
+        fontSize: '18px',
+        fontFamily: 'Space Grotesk',
+        fontStyle: '600'
+      })
+      .setOrigin(0.5)
+    container.add([background, text])
+    this.hudLayer?.add(container)
+    const button: HudButton = {
+      action,
+      container,
+      background,
+      label: text,
+      disabled: false
+    }
+
+    const idleColor = 0x1f2937
+    const pressColor = 0x273449
+    const resetColor = () => {
+      background.setFillStyle(idleColor, 0.95)
+    }
+    background.setInteractive({ useHandCursor: true })
+    background.on('pointerdown', () => {
+      if (button.disabled) return
+      background.setFillStyle(pressColor, 0.95)
+      this.handleHudButton(action)
+    })
+    background.on('pointerup', resetColor)
+    background.on('pointerupoutside', resetColor)
+    background.on('pointerout', resetColor)
+    background.on('pointercancel', resetColor)
+
+    return button
+  }
+
+  private positionHudButton(
+    button: HudButton,
+    centerX: number,
+    centerY: number,
+    width: number,
+    height: number
+  ) {
+    button.container.setPosition(centerX, centerY)
+    button.background.setDisplaySize(width, height)
+  }
+
+  private handleHudButton(action: HudButtonAction) {
+    if (action === 'save') {
+      if (this.saveBusy || this.lastState?.isGameOver) return
+      this.callbacks.onRequestSave?.()
+    } else if (action === 'restart') {
+      this.callbacks.onRequestRestart?.()
+    }
+  }
+
+  private setHudButtonState(button: HudButton, disabled: boolean) {
+    button.disabled = disabled
+    const alpha = disabled ? 0.42 : 1
+    button.background.setAlpha(alpha)
+    button.label.setAlpha(disabled ? 0.6 : 1)
+  }
+
+  private applyHudButtonStates() {
+    if (!this.hudElements) return
+    const disableSave = this.saveBusy || !this.lastState || this.lastState.isGameOver
+    this.setHudButtonState(this.hudElements.saveButton, disableSave)
+  }
+
+  private updateHud(state: RenderState) {
+    if (!this.hudElements) return
+    this.hudElements.scoreValue.setText(state.score.toString())
+    this.hudElements.linesValue.setText(state.linesCleared.toString())
+    this.hudElements.levelValue.setText(state.level.toString())
+    this.updateNextPreview(state.nextPiece)
+    this.applyHudButtonStates()
+  }
+
+  private updateNextPreview(type: TetrominoType) {
+    if (!this.hudElements) return
+    const matrix = getMatrixForType(type)
+    const previewSize = 4
+    const offsetX = Math.floor((previewSize - matrix[0].length) / 2)
+    const offsetY = Math.floor((previewSize - matrix.length) / 2)
+    const baseColor = 0x1f2937
+    this.hudElements.nextCells.forEach((cell) => {
+      cell.setFillStyle(baseColor, 0.35)
+    })
+    matrix.forEach((row, r) => {
+      row.forEach((value, c) => {
+        if (!value) return
+        const idx = (offsetY + r) * previewSize + (offsetX + c)
+        const cell = this.hudElements!.nextCells[idx]
+        if (cell) {
+          cell.setFillStyle(COLOR_MAP[type], 0.95)
+        }
+      })
+    })
+  }
+
   private createControlButtons() {
     const specs: ControlButtonSpec[] = [
       { action: 'moveLeft', label: '◀', holdable: true, row: 0, span: 1 },
@@ -274,6 +618,7 @@ export class TetrixScene extends Phaser.Scene {
       { action: 'hardDrop', label: 'DROP', holdable: false, row: 1, span: 4 }
     ]
     const layer = this.controlLayer ?? this.add.container(0, 0)
+    this.controlLayer = layer
     this.controlButtons = specs.map((spec) => {
       const container = this.add.container(0, 0)
       container.setDepth(10)
@@ -298,23 +643,24 @@ export class TetrixScene extends Phaser.Scene {
 
   private layoutControlButtons() {
     if (!this.controlButtons.length) return
-    const { width, height } = this.scale.gameSize
-    const topCandidate = this.boardOriginY + this.cellSize * this.engine.height + 16
+    const { height } = this.scale.gameSize
     const padding = 24
     const gap = 12
     const buttonHeight = 68
     const totalRows = 2
     const neededHeight = totalRows * buttonHeight + gap
-    const top = Math.min(height - padding - neededHeight, topCandidate)
+    const top = Math.min(height - padding - neededHeight, this.controlTop)
+    const startX = this.boardOriginX
+    const usableWidth = Math.max(this.boardPixelWidth, 200)
 
     for (let row = 0; row < totalRows; row += 1) {
       const rowButtons = this.controlButtons.filter((btn) => btn.row === row)
       if (!rowButtons.length) continue
       const totalSpan = rowButtons.reduce((sum, btn) => sum + btn.span, 0)
       const available =
-        width - padding * 2 - gap * Math.max(0, rowButtons.length - 1)
+        usableWidth - gap * Math.max(0, rowButtons.length - 1)
       const perUnit = available / totalSpan
-      let cursorX = padding
+      let cursorX = startX
       const centerY = top + row * (buttonHeight + gap) + buttonHeight / 2
       rowButtons.forEach((btn) => {
         const btnWidth = perUnit * btn.span
