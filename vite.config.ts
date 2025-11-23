@@ -6,7 +6,8 @@ export default defineConfig({
   base: repoName ? `/${repoName}/` : '/',
   server: {
     port: 7402,
-    host: '0.0.0.0'
+    host: '0.0.0.0',
+    allowedHosts: ['hoangch-virt.dev.itim.vn']
   },
   test: {
     environment: 'jsdom',
