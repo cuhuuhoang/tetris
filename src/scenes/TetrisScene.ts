@@ -82,6 +82,7 @@ export class TetrisScene extends Phaser.Scene {
   private controlButtons: ControlButton[] = []
   private holdTimers = new Map<string, Phaser.Time.TimerEvent>()
   private gameOverText?: Phaser.GameObjects.Text
+  private gameOverButton?: Phaser.GameObjects.Container
 
   constructor(callbacks: SceneCallbacks = {}) {
     super('tetris')
@@ -237,6 +238,7 @@ export class TetrisScene extends Phaser.Scene {
       this.drawGameOverOverlay(g, totalWidth, totalHeight)
     } else if (this.gameOverText) {
       this.gameOverText.setVisible(false)
+      this.gameOverButton?.setVisible(false)
     }
   }
 
@@ -330,12 +332,47 @@ export class TetrisScene extends Phaser.Scene {
         })
         .setDepth(12)
         .setOrigin(0.5)
+      this.createGameOverButton()
     }
     const centerX = x + width / 2
     const centerY = y + height / 2
     this.gameOverText.setPosition(centerX, centerY)
     this.gameOverText.setVisible(true)
     this.gameOverText.setWordWrapWidth(width - 24)
+    if (this.gameOverButton) {
+      const btnY = y + height - 32
+      this.gameOverButton.setPosition(centerX, btnY)
+      this.gameOverButton.setVisible(true)
+    }
+  }
+
+  private createGameOverButton() {
+    const container = this.add.container(0, 0).setDepth(12)
+    const bg = this.add.rectangle(0, 0, 160, 44, 0x1f2937, 0.95).setOrigin(0.5)
+    bg.setStrokeStyle(2, 0xffffff, 0.85)
+    const label = this.add
+      .text(0, 0, 'Restart', {
+        color: '#f8fafc',
+        fontSize: '18px',
+        fontFamily: 'Space Grotesk',
+        fontStyle: '700'
+      })
+      .setOrigin(0.5)
+    container.add([bg, label])
+    bg.setInteractive({ useHandCursor: true })
+    const pressColor = 0x273449
+    const idleColor = 0x1f2937
+    const reset = () => bg.setFillStyle(idleColor, 0.95)
+    bg.on('pointerdown', () => {
+      bg.setFillStyle(pressColor, 0.95)
+      this.startNewGame()
+    })
+    bg.on('pointerup', reset)
+    bg.on('pointerout', reset)
+    bg.on('pointerupoutside', reset)
+    bg.on('pointercancel', reset)
+    container.setVisible(false)
+    this.gameOverButton = container
   }
 
   private handleResize = () => {
