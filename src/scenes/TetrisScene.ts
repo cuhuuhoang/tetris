@@ -81,6 +81,7 @@ export class TetrisScene extends Phaser.Scene {
   private controlLayer?: Phaser.GameObjects.Container
   private controlButtons: ControlButton[] = []
   private holdTimers = new Map<string, Phaser.Time.TimerEvent>()
+  private gameOverText?: Phaser.GameObjects.Text
 
   constructor(callbacks: SceneCallbacks = {}) {
     super('tetris')
@@ -234,6 +235,8 @@ export class TetrisScene extends Phaser.Scene {
 
     if (state.isGameOver) {
       this.drawGameOverOverlay(g, totalWidth, totalHeight)
+    } else if (this.gameOverText) {
+      this.gameOverText.setVisible(false)
     }
   }
 
@@ -290,22 +293,15 @@ export class TetrisScene extends Phaser.Scene {
     totalWidth: number,
     totalHeight: number
   ) {
+    const rectX = this.boardOriginX + totalWidth * 0.05
+    const rectY = this.boardOriginY + totalHeight * 0.25
+    const rectW = totalWidth * 0.9
+    const rectH = totalHeight * 0.25
     g.fillStyle(0x000000, 0.65)
-    g.fillRoundedRect(
-      this.boardOriginX + totalWidth * 0.05,
-      this.boardOriginY + totalHeight * 0.25,
-      totalWidth * 0.9,
-      totalHeight * 0.25,
-      16
-    )
+    g.fillRoundedRect(rectX, rectY, rectW, rectH, 16)
     g.lineStyle(2, 0xffffff, 0.9)
-    g.strokeRoundedRect(
-      this.boardOriginX + totalWidth * 0.05,
-      this.boardOriginY + totalHeight * 0.25,
-      totalWidth * 0.9,
-      totalHeight * 0.25,
-      16
-    )
+    g.strokeRoundedRect(rectX, rectY, rectW, rectH, 16)
+    this.showGameOverLabel(rectX, rectY, rectW, rectH)
   }
 
   private drawCell(
@@ -319,6 +315,27 @@ export class TetrisScene extends Phaser.Scene {
     const y = this.boardOriginY + row * this.cellSize
     g.fillStyle(color, filled ? 1 : 0.35)
     g.fillRoundedRect(x + 1, y + 1, this.cellSize - 2, this.cellSize - 2, 5)
+  }
+
+  private showGameOverLabel(x: number, y: number, width: number, height: number) {
+    if (!this.gameOverText) {
+      this.gameOverText = this.add
+        .text(0, 0, 'Game Over\nRestart to play again', {
+          color: '#f8fafc',
+          fontSize: '24px',
+          fontFamily: 'Space Grotesk',
+          fontStyle: '700',
+          align: 'center',
+          wordWrap: { width: width - 24 }
+        })
+        .setDepth(12)
+        .setOrigin(0.5)
+    }
+    const centerX = x + width / 2
+    const centerY = y + height / 2
+    this.gameOverText.setPosition(centerX, centerY)
+    this.gameOverText.setVisible(true)
+    this.gameOverText.setWordWrapWidth(width - 24)
   }
 
   private handleResize = () => {
