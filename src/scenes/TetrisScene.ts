@@ -432,6 +432,7 @@ export class TetrisScene extends Phaser.Scene {
       [KeyCodes.S, 'softDrop'],
       [KeyCodes.SPACE, 'hardDrop']
     ]
+    const pauseKeys = [KeyCodes.P, KeyCodes.ESC, KeyCodes.A]
     bindings.forEach(([code, action]) => {
       const key = this.input.keyboard!.addKey(code)
       const holdable = HOLDABLE_ACTIONS.includes(action)
@@ -442,6 +443,10 @@ export class TetrisScene extends Phaser.Scene {
         }
       })
       key.on('up', () => this.stopHold(`key-${code}`))
+    })
+    pauseKeys.forEach((code) => {
+      const key = this.input.keyboard!.addKey(code)
+      key.on('down', () => this.togglePause())
     })
   }
 
